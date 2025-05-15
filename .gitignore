@@ -1,0 +1,13 @@
+PublicMM1/
+BaselFaceModel.tgz
+
+env/
+open3d-env/
+
+4.jpg
+4.t7
+bfm_detailed_face.ply
+mean_face.ply
+random_face_mesh.ply
+random_face_mesh_2.ply
+bfm_68_landmarks.fp
