@@ -3,11 +3,24 @@ BaselFaceModel.tgz
 
 env/
 open3d-env/
+DECA/
+
+facelandmarks.txt
+
 
 4.jpg
 4.t7
+1.jpg
+1.t7
 bfm_detailed_face.ply
 mean_face.ply
 random_face_mesh.ply
 random_face_mesh_2.ply
+random_face_mesh_3.ply
 bfm_68_landmarks.fp
+fitted_face_2.ply
+fitted_face.ply
+
+DECA_ShellScript.sh
+
+FaceVerse_v4/

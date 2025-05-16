@@ -1,6 +1,6 @@
 # 3D Face Fitting to 2D Landmarks
 
-import numpy as np
+'''import numpy as np
 import torchfile
 import scipy.io
 from scipy.optimize import least_squares
@@ -8,7 +8,7 @@ import open3d as o3d
 from scipy.spatial.transform import Rotation as R
 
 # Load .t7 file
-landmarks_t7 = torchfile.load("/Users/edelta076/Desktop/Project_VID_Assistant4/4.t7")
+landmarks_t7 = torchfile.load("/Users/edelta076/Desktop/Project_VID_Assistant4/1.t7")
 print(landmarks_t7.shape)
 landmarks_2d = np.array(landmarks_t7)  # Shape: (68, 2)
 print(landmarks_2d.shape)
@@ -112,6 +112,9 @@ print("Optimized shape and pose parameters:", res.x)
 # mat_data = scipy.io.loadmat('/Users/edelta076/Desktop/Project_VID_Assistant4/PublicMM1/01_MorphableModel.mat')
 
 # # Print keys to see what variables are inside
-# print(mat_data.keys())
+# print(mat_data.keys())'''
+
+import Sim3DR_Cython
+
 
 
