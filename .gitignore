@@ -25,3 +25,14 @@ DECA_ShellScript.sh
 
 FaceVerse_v4/
 HairStep/
+
+checkpoints/
+data/
+docs/
+external/
+hairstep_env/
+images/
+lib/
+project/
+results/
+scripts/
