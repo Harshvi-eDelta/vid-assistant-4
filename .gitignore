@@ -36,3 +36,6 @@ lib/
 project/
 results/
 scripts/
+
+face-parsing.PyTorch/
+BiSeNet/
