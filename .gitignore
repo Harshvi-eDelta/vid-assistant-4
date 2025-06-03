@@ -39,3 +39,7 @@ scripts/
 
 face-parsing.PyTorch/
 BiSeNet/
+MODNet/
+face-parsing.PyTorch/
+hair_depth_masks/
+ply_files/
