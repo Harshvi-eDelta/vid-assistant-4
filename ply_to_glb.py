@@ -5,3 +5,7 @@ mesh = trimesh.load("face_mesh_poisson_me.ply")
 
 # Export to GLB
 mesh.export("face_mesh_poisson_me.glb")
+
+mesh = trimesh.load("face_mesh_poisson_me.glb")
+mesh.show()
+

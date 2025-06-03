@@ -43,3 +43,7 @@ MODNet/
 face-parsing.PyTorch/
 hair_depth_masks/
 ply_files/
+images/
+obj_files/
+final_combine_face/
+difflocks/
