@@ -47,3 +47,5 @@ images/
 obj_files/
 final_combine_face/
 difflocks/
+HairNet/
+MonoHair/
