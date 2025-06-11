@@ -140,28 +140,15 @@ o3d.visualization.draw_geometries([mesh_crop]) '''
 
 # o3d.visualization.draw_geometries([mesh], window_name="Smoothed Colored Hair Mesh", mesh_show_back_face=True)
 
-
-
-import numpy as np
+ #######
+'''import numpy as np
 import open3d as o3d
 from PIL import Image
 import os
 from tqdm import tqdm
+import cv2
 
-import numpy as np
-import open3d as o3d
-from PIL import Image
-import os
-from tqdm import tqdm # Assuming tqdm is now correctly imported
-
-def reconstruct_3d_hair_from_depth_and_mask(rgb_image_path, depth_map_path, hair_mask_path, output_obj_path, camera_intrinsics=None):
-    print("Starting 3D hair reconstruction (programmatic, CPU-only)...")
-    print(f"Input RGB: {rgb_image_path}")
-    print(f"Input Depth Map: {depth_map_path}")
-    print(f"Input Hair Mask: {hair_mask_path}")
-    print(f"Output OBJ Path: {output_obj_path}")
-
-    # --- 1. Load Images ---
+def reconstruct_3d_hair_from_depth_and_mask(rgb_image_path, depth_map_path, hair_mask_path, output_obj_folder, camera_intrinsics=None):
     try:
         rgb_img = Image.open(rgb_image_path).convert("RGB")
         depth_map_raw = Image.open(depth_map_path).convert("L") # 'L' for grayscale
@@ -174,44 +161,31 @@ def reconstruct_3d_hair_from_depth_and_mask(rgb_image_path, depth_map_path, hair
         print(f"ERROR: Failed to load or process input images: {e}")
         return
 
-    depth_data = np.array(depth_map_raw).astype(np.float32) # Values 0-255
-    hair_mask_data = np.array(hair_mask_raw).astype(np.float32) / 255.0 # Normalize to 0-1
+    depth_data = np.array(depth_map_raw).astype(np.float32) # Values 0-255 (assuming this range for depth map PNG)
+    hair_mask_data = np.array(hair_mask_raw).astype(np.float32) / 255.0 # Normalize mask to 0-1
 
     H, W = depth_data.shape
     print(f"DEBUG: Image dimensions (H, W): ({H}, {W})")
 
-    # --- Debug: Check mask and depth data ranges ---
     print(f"DEBUG: Hair Mask Data (min, max): ({np.min(hair_mask_data)}, {np.max(hair_mask_data)})")
     print(f"DEBUG: Depth Data (raw, min, max): ({np.min(depth_data)}, {np.max(depth_data)})")
     
-    # Check if mask is essentially empty
     if np.sum(hair_mask_data > 0.5) < 10: # Very few hair pixels
         print("WARNING: Very few hair pixels found in mask. Output might be empty or distorted.")
         
-    # --- 2. Normalize Depth Data (CRITICAL SECTION) ---
-    # Adjust these values based on your scene.
-    # For your depth map (white is closer, black is further):
-    # - 255 (white) should map to min_depth_val_in_meters
-    # - 0 (black) should map to max_depth_val_in_meters
-    
-    min_depth_val_in_meters = 0.5  # Assumed closest point in real-world meters
-    max_depth_val_in_meters = 1.5  # Assumed furthest point in real-world meters
+    min_depth_val_in_meters = 0.5  
+    max_depth_val_in_meters = 1.5  
 
-    # Map 0-255 to 0-1 (normalized pixel value)
+    depth_data = cv2.bilateralFilter(depth_data.astype(np.uint8), d=5, sigmaColor=75, sigmaSpace=75)
+    depth_data = depth_data.astype(np.float32)
+
     depth_normalized_pixel_value = depth_data / 255.0
-
-    # Map normalized pixel value to depth in meters.
-    # Since higher pixel value (white) is closer, use (1.0 - pixel_value) * range + min_val
     depth_in_meters = min_depth_val_in_meters + (1.0 - depth_normalized_pixel_value) * (max_depth_val_in_meters - min_depth_val_in_meters)
 
     print(f"DEBUG: Depth in Meters (min, max): ({np.min(depth_in_meters)}, {np.max(depth_in_meters)})")
 
-    # --- 3. Define Camera Intrinsics ---
     if camera_intrinsics is None:
-        # These are rough assumptions. For accurate results, you need calibration data.
-        # A common approximation for focal length is 1.2 * max(W, H) or W / (2 * tan(FOV/2))
-        # Given your 512x512 images, focal_length ~500-600 pixels is common.
-        focal_length = W * 1.0 # Or try W / 1.5 or W * 1.2
+        focal_length = W * 1.0 # Adjust this. Try W * 0.8, W * 1.2, W * 1.5
         cx, cy = W / 2, H / 2
         
         intrinsic_matrix = o3d.camera.PinholeCameraIntrinsic(
@@ -223,103 +197,238 @@ def reconstruct_3d_hair_from_depth_and_mask(rgb_image_path, depth_map_path, hair
         print(f"DEBUG: Using provided camera intrinsics: {intrinsic_matrix}")
 
 
-    # --- 4. Create Point Cloud ---
+    # --- 4. Create 3D Point Cloud ---
     points = []
     colors = []
+    skipped_points_count = 0 
     
     # Check if there are any hair pixels in the mask before looping
     if np.sum(hair_mask_data > 0.5) == 0:
         print("WARNING: Hair mask is completely empty. No points to reconstruct.")
-        return # Exit if no hair found
+        return None # Return None if no hair found
 
-    for v in tqdm(range(H), desc="Generating Point Cloud"):
+    for v in tqdm(range(H), desc="Generating Hair Point Cloud"):
         for u in range(W):
             if hair_mask_data[v, u] > 0.5: # If pixel is part of the hair mask
                 z = depth_in_meters[v, u] # Get depth value (Z-coordinate)
 
-                # Ensure z is a valid number (not NaN, Inf, or extremely small/large)
-                if not np.isfinite(z) or z <= 0 or z > max_depth_val_in_meters * 2: # Check for invalid depth
-                    continue # Skip invalid points
-
-                # Convert 2D pixel (u,v) and depth (z) to 3D point (x,y,z)
+                if not np.isfinite(z) or z <= 0 or z > max_depth_val_in_meters * 2: 
+                    skipped_points_count += 1 
+                    continue 
                 x = (u - intrinsic_matrix.get_principal_point()[0]) * z / intrinsic_matrix.get_focal_length()[0]
                 y = (v - intrinsic_matrix.get_principal_point()[1]) * z / intrinsic_matrix.get_focal_length()[1]
 
                 points.append([x, y, z])
                 colors.append(np.array(rgb_img.getpixel((u, v))) / 255.0) # Normalize RGB to 0-1
+    print(f"DEBUG: Generated hair point cloud with {len(points)} points. SKIPPED {skipped_points_count} points due to invalid Z-values.") # <-- ENSURE THIS IS ACTIVE
+    if not points:
+        print("ERROR: No valid 3D points could be generated for hair. Check mask, depth, or intrinsics.")
+        return None
+
+    pcd = o3d.geometry.PointCloud()
+    pcd = pcd.voxel_down_sample(voxel_size=0.0025)
+    pcd.points = o3d.utility.Vector3dVector(np.array(points))
+    pcd.colors = o3d.utility.Vector3dVector(np.array(colors))
+    print(f"DEBUG: Generated hair point cloud with {len(points)} points. SKIPPED {skipped_points_count} points due to invalid Z-values.") 
+
+    pcd.estimate_normals(
+        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.05, max_nn=30) 
+    )
+    pcd.orient_normals_consistent_tangent_plane(30)
+    print("Normals estimated and oriented.")
+    # o3d.visualization.draw_geometries([pcd], window_name="Hair Point Cloud - Inspect Quality"
+    print("Generating hair mesh using Ball Pivoting Reconstruction...")
+
+    radii = [0.005, 0.01, 0.02]  
+    try:
+        mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
+            pcd, o3d.utility.DoubleVector(radii)
+        )
+        mesh.remove_degenerate_triangles()
+        mesh.remove_duplicated_triangles()
+        mesh.remove_duplicated_vertices()
+        mesh.remove_unreferenced_vertices()
+        mesh.compute_vertex_normals()
+        print("  Mesh generated using Ball Pivoting.")
+    except Exception as e:
+        print(f"ERROR: Ball Pivoting failed: {e}")
+        return None
+
+    output_filename = os.path.splitext(os.path.basename(rgb_image_path))[0] + "_hair.obj"
+    output_full_path = os.path.join(output_obj_folder, output_filename)
+
+    try:
+        o3d.io.write_triangle_mesh(output_full_path, mesh)
+        print(f"3D hair mesh saved to: {output_full_path}")
+    except Exception as e:
+        print(f"ERROR: Failed to save mesh to {output_full_path}: {e}")
+        return None
+    o3d.visualization.draw_geometries([mesh], window_name=f"Reconstructed Hair: {output_filename}")
+
+    print("\nReconstruction process finished.")
+    return mesh
+
+if __name__ == "__main__":
+
+    my_rgb_image_path = "./images/fimg8.jpg" 
+    my_depth_map_path = "./MODNet/depth_map/fimg8_depth_map.png" 
+    my_hair_mask_path = "./face-parsing.PyTorch/hair_masks/fimg8_hair_mask.png" 
+    my_output_folder = "./obj_files/" 
+
+    os.makedirs(my_output_folder, exist_ok=True) 
+
+    # --- Limit OMP threads for stability on macOS (Keep this) ---
+    os.environ["OMP_NUM_THREADS"] = "1" 
+
+    reconstruct_3d_hair_from_depth_and_mask(
+        my_rgb_image_path,
+        my_depth_map_path,
+        my_hair_mask_path,
+        my_output_folder
+    )
+    print("\nScript finished generating 3D hair mesh.")
+
+    # --- You can remove or comment out the argparse section ---
+    # parser = argparse.ArgumentParser(description="Generate 3D hair mesh from RGB, Depth, and Mask.")
+    # parser.add_argument("--rgb_path", type=str, required=True, ...)
+    # parser.add_argument("--depth_path", type=str, required=True, ...)
+    # parser.add_argument("--mask_path", type=str, required=True, ...)
+    # parser.add_argument("--output_folder", type=str, default="./output_3d_hair_meshes/", ...)
+    # args = parser.parse_args()
+    # (The `args` variable would no longer be used if you remove the parser section) '''
+
+import numpy as np
+import open3d as o3d
+from PIL import Image
+import os
+from tqdm import tqdm
+import cv2
+
+def reconstruct_3d_hair_from_depth_and_mask(rgb_image_path, depth_map_path, hair_mask_path, output_obj_folder, camera_intrinsics=None):
+    # --- 1. Load images ---
+    rgb_img = Image.open(rgb_image_path).convert("RGB")
+    depth_map_raw = Image.open(depth_map_path).convert("L")
+    hair_mask_raw = Image.open(hair_mask_path).convert("L")
+
+    depth_data = np.array(depth_map_raw).astype(np.float32)
+    hair_mask_data = np.array(hair_mask_raw).astype(np.float32) / 255.0
+
+    H, W = depth_data.shape
+    print(f"DEBUG: Image dimensions (H, W): ({H}, {W})")
+    print(f"DEBUG: Hair Mask Data (min, max): ({np.min(hair_mask_data)}, {np.max(hair_mask_data)})")
+    print(f"DEBUG: Depth Data (raw, min, max): ({np.min(depth_data)}, {np.max(depth_data)})")
+
+    if np.sum(hair_mask_data > 0.5) < 10:
+        print("WARNING: Very few hair pixels found in mask.")
+
+    min_depth_val_in_meters = 0.5
+    max_depth_val_in_meters = 1.5
+
+    depth_data = cv2.bilateralFilter(depth_data.astype(np.uint8), d=5, sigmaColor=75, sigmaSpace=75)
+    depth_data = depth_data.astype(np.float32)
+
+    depth_normalized_pixel_value = depth_data / 255.0
+    depth_in_meters = min_depth_val_in_meters + (1.0 - depth_normalized_pixel_value) * (max_depth_val_in_meters - min_depth_val_in_meters)
+
+    print(f"DEBUG: Depth in Meters (min, max): ({np.min(depth_in_meters)}, {np.max(depth_in_meters)})")
+
+    # --- 2. Set up camera intrinsics ---
+    if camera_intrinsics is None:
+        focal_length = W * 1.0
+        cx, cy = W / 2, H / 2
+        intrinsic_matrix = o3d.camera.PinholeCameraIntrinsic(width=W, height=H, fx=focal_length, fy=focal_length, cx=cx, cy=cy)
+    else:
+        intrinsic_matrix = camera_intrinsics
+
+    # --- 3. Generate point cloud ---
+    points = []
+    colors = []
+    for v in tqdm(range(H), desc="Generating Hair Point Cloud"):
+        for u in range(W):
+            if hair_mask_data[v, u] > 0.5:
+                z = depth_in_meters[v, u]
+                if not np.isfinite(z) or z <= 0 or z > max_depth_val_in_meters * 2:
+                    continue
+                x = (u - intrinsic_matrix.get_principal_point()[0]) * z / intrinsic_matrix.get_focal_length()[0]
+                y = (v - intrinsic_matrix.get_principal_point()[1]) * z / intrinsic_matrix.get_focal_length()[1]
+                points.append([x, y, z])
+                colors.append(np.array(rgb_img.getpixel((u, v))) / 255.0)
 
     if not points:
-        print("ERROR: No valid 3D points could be generated. This might be due to an empty mask, invalid depth values, or incorrect intrinsics.")
-        return
+        print("ERROR: No valid 3D points generated.")
+        return None
 
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(np.array(points))
     pcd.colors = o3d.utility.Vector3dVector(np.array(colors))
-    o3d.visualization.draw_geometries([pcd])
-    print(f"DEBUG: Generated point cloud with {len(points)} points.")
-
-    # --- 5. (Optional) Downsample and estimate normals for meshing ---
-    # Downsampling can speed up meshing, but might lose detail
-    # pcd = pcd.voxel_down_sample(voxel_size=0.01) # Adjust voxel_size based on your scale
-
-    # Estimate normals for surface reconstruction
-    # Adjust radius/max_nn based on point density and desired smoothness
-    # Use a radius that's appropriate for the scale of your points (e.g., 0.05-0.1 for points in meter range)
+    pcd = pcd.voxel_down_sample(voxel_size=0.0025)
     pcd.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.05, max_nn=30))
-    print("DEBUG: Normals estimated for point cloud.")
+    pcd.orient_normals_consistent_tangent_plane(30)
 
-    # --- 6. Surface Reconstruction (Generate Mesh) ---
-    # Poisson reconstruction parameters. Adjust `depth` (higher is more detail, more noise).
-    # `depth=9` is already quite high for typical point clouds.
-    # If point cloud is noisy, lower `depth` to smooth it out (e.g., 6-8).
-    # If the point cloud is sparse, create_from_point_cloud_poisson can fail.
-    try:
-        mesh, densities = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pcd, depth=6) # Changed depth to 8 for robustness
-        print("DEBUG: Mesh generated using Poisson Reconstruction.")
+    print("Generating mesh using Ball Pivoting...")
+    radii = [0.005, 0.01, 0.02]
+    mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(pcd, o3d.utility.DoubleVector(radii))
+    mesh.remove_degenerate_triangles()
+    mesh.remove_duplicated_triangles()
+    mesh.remove_duplicated_vertices()
+    mesh.remove_unreferenced_vertices()
+    mesh.compute_vertex_normals()
 
-        # You might want to filter the mesh by density to remove spurious geometry
-        # vertices_to_remove = densities < np.quantile(densities, 0.01) # Remove bottom 1% by density
-        # mesh.remove_vertices_by_mask(vertices_to_remove)
-
-    except Exception as e:
-        print(f"ERROR: Mesh generation failed using Poisson Reconstruction: {e}")
-        print("This often happens if the point cloud is very noisy, sparse, or has incorrect scale.")
-        return
-
-
-    # --- 7. Save the Mesh ---
-    output_obj_file = os.path.join(output_obj_path, os.path.splitext(os.path.basename(rgb_image_path))[0] + "_hair.obj")
-    try:
-        o3d.io.write_triangle_mesh(output_obj_file, mesh)
-        print(f"3D hair mesh saved to: {output_obj_file}")
-    except Exception as e:
-        print(f"ERROR: Failed to save mesh: {e}")
-        return
-
-    # Optional: Visualize the mesh for debugging
-    o3d.visualization.draw_geometries([mesh])
-
-    print("\nReconstruction process finished.")
-
-
-# --- Example Usage (replace with your actual paths) ---
-if __name__ == "__main__":
-    # Make sure your files exist
-    # Put your original RGB image here
-    rgb_img_path = "./images/dme.jpg"
-    # Put your MODNet depth map here
-    depth_map_path = "./MODNet/depth_map/dme_depth_map.png"
-    # Put your face-parsing hair mask here
-    hair_mask_path = "./face-parsing.PyTorch/hair_masks/dme_hair_mask.png"
-    
-    # Output directory for the OBJ file
-    output_folder = "./obj_files/dme_colored_hair_mesh.obj"
-    os.makedirs(output_folder, exist_ok=True)
-
-    reconstruct_3d_hair_from_depth_and_mask(
-        rgb_img_path,
-        depth_map_path,
-        hair_mask_path,
-        output_folder
+    # 🔧 Step 1: Crop by Z (remove backside)
+    bbox = mesh.get_axis_aligned_bounding_box()
+    z_max = bbox.get_max_bound()[2]
+    z_threshold = z_max - 0.1  # keep only front portion
+    crop_box = o3d.geometry.AxisAlignedBoundingBox(
+        min_bound=(bbox.get_min_bound()[0], bbox.get_min_bound()[1], bbox.get_min_bound()[2]),
+        max_bound=(bbox.get_max_bound()[0], bbox.get_max_bound()[1], z_threshold)
     )
-    print("\nReconstruction process finished.")
+    mesh = mesh.crop(crop_box)
+    print("🔧 Backside removed using Z cropping.")
+
+    # 🔧 Step 2: Keep only the largest cluster
+    # Cluster connected triangles
+    triangle_clusters, cluster_n_triangles, _ = mesh.cluster_connected_triangles()
+    triangle_clusters = np.asarray(triangle_clusters)
+    largest_cluster_idx = np.argmax(cluster_n_triangles)
+
+    # Get indices of triangles to keep
+    triangles_to_keep = np.where(triangle_clusters == largest_cluster_idx)[0]
+
+    # Create a new mesh using only the largest triangle cluster
+    mesh_filtered = o3d.geometry.TriangleMesh()
+    mesh_filtered.vertices = mesh.vertices
+    mesh_filtered.triangles = o3d.utility.Vector3iVector(np.asarray(mesh.triangles)[triangles_to_keep])
+    mesh_filtered.vertex_colors = mesh.vertex_colors
+    mesh_filtered.compute_vertex_normals()
+
+    mesh = mesh_filtered  # replace original mesh with the filtered one
+
+    print("🔧 Kept only the largest connected mesh component.")
+
+    # 🔧 Step 3: Smooth the mesh
+    mesh = mesh.filter_smooth_simple(number_of_iterations=3)
+    mesh.compute_vertex_normals()
+    print("🔧 Mesh smoothed.")
+
+    output_filename = os.path.splitext(os.path.basename(rgb_image_path))[0] + "_hair.obj"
+    output_full_path = os.path.join(output_obj_folder, output_filename)
+    o3d.io.write_triangle_mesh(output_full_path, mesh)
+    print(f"3D hair mesh saved to: {output_full_path}")
+
+    o3d.visualization.draw_geometries([mesh], window_name=f"Reconstructed Hair: {output_filename}")
+    return mesh
+
+if __name__ == "__main__":
+    my_rgb_image_path = "./images/dme.jpg"
+    my_depth_map_path = "./MODNet/depth_map/dme_depth_map.png"
+    my_hair_mask_path = "./face-parsing.PyTorch/hair_masks/dme_hair_mask.png"
+    my_output_folder = "./obj_files/"
+    os.makedirs(my_output_folder, exist_ok=True)
+    os.environ["OMP_NUM_THREADS"] = "1"
+    reconstruct_3d_hair_from_depth_and_mask(
+        my_rgb_image_path,
+        my_depth_map_path,
+        my_hair_mask_path,
+        my_output_folder
+    )
+    print("\n Script finished generating 3D hair mesh.")
